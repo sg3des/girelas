@@ -3,34 +3,37 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/imroc/req"
 	"github.com/sg3des/argum"
 )
 
-var args struct {
-	Rep   string `argum:"pos,req" help:"repository name, like: owner/repository"`
-	Tag   string `help:"tag name, if not specified, download latest release"`
-	Token string `help:"access token required for private repository"`
-}
-
-func init() {
-	argum.MustParse(&args)
-	log.SetFlags(log.Lshortfile)
-}
-
 func main() {
-	log.Println(args.Rep)
+	// initliaze and fill `girelas` instance by cmd arguments
+	g := &Girelas{}
+	argum.MustParse(g)
+
+	// set debug mode
+	if g.Debug {
+		log.SetFlags(log.Lshortfile)
+	} else {
+		log.SetOutput(ioutil.Discard)
+	}
+
+	log.Println(g.Rep)
 
 	// load all releases
-	releases, err := loadReleases()
+	releases, err := g.LoadReleases()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// lookup release by tag or pick latest if tag not specified
-	rel, err := foundRelease(releases, args.Tag)
+	rel, err := g.FoundRelease(releases)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,23 +49,48 @@ func main() {
 	log.Println(asset.URL, asset.Name, asset.Size)
 
 	// downlaod archive from assets from the latest release
-	if err := downloadAsset(asset); err != nil {
+	if err := g.DownloadAsset(asset); err != nil {
 		log.Fatal(err)
 	}
 }
 
-// loadReleases is request to the github api to specified repository and load all releases
-func loadReleases() (releases []ReleaseData, err error) {
-	headers := req.Header{
-		"Authorization": "token " + args.Token,
-		"Accept":        "application/json",
-	}
-	resp, err := req.Get("https://api.github.com/repos/"+args.Rep+"/releases", headers)
+type Girelas struct {
+	Rep   string `argum:"pos,req" help:"repository name, like: owner/repository"`
+	Tag   string `help:"tag name, if not specified, download latest release"`
+	Token string `help:"access token required for private repository"`
+	Dir   string `help:"path to the directory where to save files"`
+
+	Debug bool `help:"debug mode"`
+}
+
+func (g *Girelas) GET(url, contentType string) (*req.Resp, error) {
+	resp, err := req.Get(url, g.reqHeaders(contentType))
 	if err != nil {
-		return releases, err
+		return resp, err
 	}
 	if r := resp.Response(); r.StatusCode != 200 {
-		return releases, errors.New(r.Status)
+		return resp, errors.New(r.Status)
+	}
+
+	return resp, nil
+}
+
+func (g *Girelas) reqHeaders(contentType string) req.Header {
+	headers := req.Header{
+		"Accept": contentType,
+	}
+	if g.Token != "" {
+		headers["Authorization"] = "token " + g.Token
+	}
+
+	return headers
+}
+
+// loadReleases is request to the github api to specified repository and load all releases
+func (g *Girelas) LoadReleases() (releases []ReleaseData, err error) {
+	resp, err := g.GET("https://api.github.com/repos/"+g.Rep+"/releases", "application/json")
+	if err != nil {
+		return releases, err
 	}
 
 	err = resp.ToJSON(&releases)
@@ -70,41 +98,39 @@ func loadReleases() (releases []ReleaseData, err error) {
 }
 
 // find a release by specified tag or pick latest
-func foundRelease(releases []ReleaseData, tag string) (rel ReleaseData, err error) {
+func (g *Girelas) FoundRelease(releases []ReleaseData) (rel ReleaseData, err error) {
 	if len(releases) == 0 {
 		return rel, errors.New("releases not found")
 	}
 
-	if tag == "" || tag == "latest" {
+	if g.Tag == "" || g.Tag == "latest" {
 		return releases[0], nil
 	}
 
 	for _, rel = range releases {
-		if rel.TagName == tag {
+		if rel.TagName == g.Tag {
 			return rel, nil
 		}
 	}
 
-	return rel, fmt.Errorf("release with tag '%s' not found", args.Tag)
+	return rel, fmt.Errorf("release with tag '%s' not found", g.Tag)
 }
 
 // downloadAsset is request to the github api, to specified asset URL,
 // it is impotant to set 'application/octet-stream' to the Accept header
 // in response will be 302 forwarding to the real download link
-func downloadAsset(asset AssetData) error {
-	headers := req.Header{
-		"Authorization": "token " + args.Token,
-		"Accept":        "application/octet-stream",
-	}
-	resp, err := req.Get(asset.URL, headers)
+func (g *Girelas) DownloadAsset(asset AssetData) error {
+	resp, err := g.GET(asset.URL, "application/octet-stream")
 	if err != nil {
 		return err
 	}
-	if r := resp.Response(); r.StatusCode != 200 {
-		return errors.New(r.Status)
+
+	// create directory if it specified
+	if g.Dir != "" {
+		os.MkdirAll(g.Dir, 0777)
 	}
 
-	return resp.ToFile(asset.Name)
+	return resp.ToFile(filepath.Join(g.Dir, asset.Name))
 }
 
 type ReleaseData struct {
