@@ -16,7 +16,7 @@ jobs:
           go-version: 1.17
 
       - name: Build
-        run: go build -ldflags="-s -w" -trimpath -o ${{ github.repository }}
+        run: go build -ldflags="-s -w" -trimpath -o ${{ github.event.repository.name }}
 
       - name: release
         id: create_release
@@ -36,6 +36,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ github.repository }}
-          asset_name: ${{ github.repository }}
+          asset_path: ${{ github.event.repository.name }}
+          asset_name: ${{ github.event.repository.name }}
           asset_content_type: application/binary
